@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>CRM Customer Search - RESOLLECT</title>
+
+    <!-- Excel XLSX library from CDN (needs internet) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #000;
+            margin: 0;
+            padding: 20px;
+            color: #fff;
+        }
+        .container {
+            width: 1200px;
+            margin: 0 auto;
+            background-color: rgba(255,255,255,0.08);
+            padding: 20px;
+            border-radius: 8px;
+        }
+        h1 {
+            text-align: center;
+        }
+        .search-section {
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        input[type="text"],
+        input[type="file"],
+        select,
+        input[type="date"],
+        input[type="time"],
+        textarea {
+            padding: 8px;
+            margin: 4px;
+            border-radius: 4px;
+            border: 1px solid #444;
+            background: rgba(0,0,0,0.6);
+            color: #fff;
+        }
+        button {
+            padding: 8px 16px;
+            margin: 4px;
+            border-radius: 4px;
+            border: none;
+            background: #007bff;
+            color: #fff;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        .details {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-top: 12px;
+        }
+        .detail-box {
+            flex: 1 1 220px;
+            background: rgba(255,255,255,0.05);
+            padding: 10px;
+            border-radius: 6px;
+        }
+        .remarks-section {
+            margin-top: 20px;
+        }
+        .remarks-list {
+            list-style: none;
+            padding: 0;
+        }
+        .remark-item {
+            background: rgba(255,255,255,0.05);
+            border-left: 4px solid #ffc107;
+            padding: 8px;
+            margin-bottom: 6px;
+            border-radius: 4px;
+        }
+        .remark-date {
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>CRM Customer Search </h1>
+
+    <div style="text-align:center; margin-bottom:10px;">
+        <button type="button" onclick="openScheduledCalls()">Get Scheduled Calls</button>
+    </div>
+
+    <div class="search-section">
+        <input type="file" id="excelFile" accept=".xlsx,.xls"><br>
+        <input type="text" id="searchId" placeholder="Enter Customer ID (first column)">
+        <button onclick="searchCustomer()">Search</button>
+    </div>
+
+    <div id="customerDetails" class="details" style="display:none;"></div>
+
+    <div id="remarksSection" class="remarks-section" style="display:none;">
+        <h2>Remarks</h2>
+        <ul id="remarksList" class="remarks-list"></ul>
+
+        <select id="statusDropdown">
+            <option value="">Select Status</option>
+            <option value="Call Back">Call Back</option>
+            <option value="PTP">PTP</option>
+            <option value="Future PTP">Future PTP</option>
+            <option value="Medical Issues">Medical Issues</option>
+            <option value="Third Party">Third Party</option>
+            <option value="Left Message">Left Message</option>
+        </select>
+
+        <div id="datetimeBlock" style="display:none; margin-top:8px;">
+            <label for="ptpDate">Date:</label>
+            <input type="date" id="ptpDate">
+            <label for="ptpTime">Time:</label>
+            <input type="time" id="ptpTime">
+            <button onclick="schedulePTPOrCallback()">Schedule (Save &amp; Notify)</button>
+        </div>
+
+        <textarea id="newRemark" rows="3" style="width:100%;" placeholder="Add a remark / scheduled remark..."></textarea><br>
+        <button onclick="addRemark()">Add Remark</button>
+    </div>
+
+    <button id="exportBtn" style="display:none;" onclick="exportExcel()">Export Updated Excel</button>
+</div>
+
+<script>
+    // --- Globals ---
+    var workbook;
+    var headers = [];
+    var data = [];           // 2D array rows (without header row)
+    var customerRow = -1;    // index in data[]
+    var hasUnsavedChanges = false;
+    var lastSelectedStatus = "";
+    var scheduledNotifications = []; // {id,status,datetime,remark,done,...}
+
+    // warn on close if unsaved
+    window.addEventListener("beforeunload", function(e){
+        if (hasUnsavedChanges) {
+            e.preventDefault();
+            e.returnValue = "";
+            return "";
+        }
+    });
+
+    // Handle file upload
+    document.getElementById("excelFile").addEventListener("change", function(e){
+        var file = e.target.files[0];
+        if (!file) {
+            alert("No file selected.");
+            return;
+        }
+        alert("File selected: " + file.name);
+
+        if (typeof XLSX === "undefined") {
+            alert("XLSX library not loaded from CDN.\nCheck your internet connection or firewall.");
+            return;
+        }
+
+        var reader = new FileReader();
+        reader.onload = function(ev) {
+            try {
+                var arrayData = new Uint8Array(ev.target.result);
+                workbook = XLSX.read(arrayData, { type: "array" });
+
+                var sheetName = workbook.SheetNames[0];
+                var ws = workbook.Sheets[sheetName];
+
+                var json = XLSX.utils.sheet_to_json(ws, { header: 1 });
+                if (!json || json.length < 1) {
+                    alert("Excel seems empty.");
+                    return;
+                }
+
+                headers = json[0];
+                data = json.slice(1);
+
+                // Ensure last column is Remarks
+                if (headers[headers.length - 1] !== "Remarks") {
+                    headers.push("Remarks");
+                    for (var i=0; i<data.length; i++) {
+                        while (data[i].length < headers.length) {
+                            data[i].push("");
+                        }
+                    }
+                } else {
+                    for (var j=0; j<data.length; j++) {
+                        while (data[j].length < headers.length) {
+                            data[j].push("");
+                        }
+                    }
+                }
+
+                alert("Excel loaded!\nRows: " + data.length + "\nHeaders: " + headers.join(", "));
+                document.getElementById("exportBtn").style.display = "inline-block";
+            } catch (err) {
+                console.log(err);
+                alert("Error parsing Excel. See console (F12 -> Console).");
+            }
+        };
+        reader.onerror = function() {
+            alert("Error reading file.");
+        };
+        reader.readAsArrayBuffer(file);
+    });
+
+    // status dropdown: show date/time for PTP / Call Back
+    document.getElementById("statusDropdown").addEventListener("change", function(e){
+        var v = e.target.value;
+        lastSelectedStatus = v;
+        if (v === "PTP" || v === "Call Back") {
+            document.getElementById("datetimeBlock").style.display = "inline-block";
+        } else {
+            document.getElementById("datetimeBlock").style.display = "none";
+        }
+    });
+
+    // search customer
+    function searchCustomer() {
+        var searchId = document.getElementById("searchId").value;
+        if (!searchId || searchId.trim() === "") {
+            alert("Enter a customer ID.");
+            return;
+        }
+        if (!data.length) {
+            alert("Load an Excel file first.");
+            return;
+        }
+        var target = searchId.replace(/\s+/g, "");
+        customerRow = -1;
+        for (var i=0; i<data.length; i++) {
+            if (data[i][0] && data[i][0].toString().replace(/\s+/g, "") === target) {
+                customerRow = i;
+                break;
+            }
+        }
+        if (customerRow === -1) {
+            alert("Customer not found in first column.");
+            return;
+        }
+        showCustomerDetails();
+        showRemarks();
+        document.getElementById("customerDetails").style.display = "flex";
+        document.getElementById("remarksSection").style.display = "block";
+        document.getElementById("statusDropdown").value = lastSelectedStatus;
+    }
+
+    function showCustomerDetails() {
+        var detailsDiv = document.getElementById("customerDetails");
+        detailsDiv.innerHTML = "";
+        var row = data[customerRow];
+
+        for (var i=0; i<headers.length; i++) {
+            if (headers[i] === "Remarks") continue;
+            var box = document.createElement("div");
+            box.className = "detail-box";
+            var val = (row[i] !== undefined && row[i] !== null) ? row[i] : "N/A";
+            box.innerHTML = "<strong>" + headers[i] + ":</strong> " + val;
+            detailsDiv.appendChild(box);
+        }
+    }
+
+    function showRemarks() {
+        var list = document.getElementById("remarksList");
+        list.innerHTML = "";
+        var rIdx = headers.length - 1;
+        var str = data[customerRow][rIdx] || "";
+        var remarks = [];
+        if (str) {
+            try { remarks = JSON.parse(str); } catch(e) { remarks = []; }
+        }
+        remarks.sort(function(a,b){
+            return new Date(b.date) - new Date(a.date);
+        });
+        for (var i=0; i<remarks.length; i++) {
+            var r = remarks[i];
+            var li = document.createElement("li");
+            li.className = "remark-item";
+            li.innerHTML = "<span class='remark-date'>" +
+                           r.date + " (" + (r.status || "No Status") +
+                           "):</span> " + r.text;
+            list.appendChild(li);
+        }
+    }
+
+    function addRemark() {
+        if (customerRow === -1) {
+            alert("Search and select a customer first.");
+            return;
+        }
+        var txt = document.getElementById("newRemark").value;
+        var st = document.getElementById("statusDropdown").value;
+        if (!txt || txt.trim() === "") {
+            alert("Enter a remark.");
+            return;
+        }
+        if (!st) {
+            alert("Select a status.");
+            return;
+        }
+        var idx = headers.length - 1;
+        var str = data[customerRow][idx] || "";
+        var remarks = [];
+        if (str) {
+            try { remarks = JSON.parse(str); } catch(e) { remarks = []; }
+        }
+        var today = new Date().toISOString().split("T")[0];
+        remarks.push({ date: today, text: txt, status: st });
+        data[customerRow][idx] = JSON.stringify(remarks);
+        hasUnsavedChanges = true;
+        lastSelectedStatus = st;
+        document.getElementById("newRemark").value = "";
+        showRemarks();
+        alert("Remark added. Export Excel to save permanently.");
+    }
+
+    // Date & time OPTIONAL here
+    function schedulePTPOrCallback() {
+        if (customerRow === -1) {
+            alert("Search and select a customer first.");
+            return;
+        }
+        var st = document.getElementById("statusDropdown").value;
+        if (st !== "PTP" && st !== "Call Back") {
+            alert("Status must be PTP or Call Back to schedule.");
+            return;
+        }
+        var d = document.getElementById("ptpDate").value;
+        var t = document.getElementById("ptpTime").value;
+        var txt = document.getElementById("newRemark").value;
+        if (!txt || txt.trim() === "") {
+            alert("Enter a remark to save with schedule.");
+            return;
+        }
+
+        var hasDT = (d && t);
+        var datetimeISO = hasDT ? (d + "T" + t + ":00") : "";
+        var customerId = data[customerRow][0];
+
+        var scheduled = {
+            id: customerId,
+            status: st,
+            datetime: datetimeISO,   // can be empty string
+            remark: txt,
+            createdAt: new Date().toISOString(),
+            done: false
+        };
+        scheduledNotifications.unshift(scheduled);
+
+        var idx = headers.length - 1;
+        var str = data[customerRow][idx] || "";
+        var remarks = [];
+        if (str) {
+            try { remarks = JSON.parse(str); } catch(e) { remarks = []; }
+        }
+        var today = new Date().toISOString().split("T")[0];
+        var textPrefix;
+        if (hasDT) {
+            textPrefix = "(Scheduled " + st + " at " + datetimeISO + ") ";
+        } else {
+            textPrefix = "(Scheduled " + st + " (no date/time set)) ";
+        }
+        remarks.push({
+            date: today,
+            text: textPrefix + txt,
+            status: st
+        });
+        data[customerRow][idx] = JSON.stringify(remarks);
+        hasUnsavedChanges = true;
+        document.getElementById("newRemark").value = "";
+        showRemarks();
+
+        var msg = "Scheduled " + st + " for " + customerId;
+        if (hasDT) {
+            msg += " on " + d + " " + t;
+        } else {
+            msg += " (no date/time set)";
+        }
+        msg += ". Use 'Get Scheduled Calls' to view/manage.";
+        alert(msg);
+    }
+
+    function focusOnCustomerId(customerId) {
+        if (!data.length) {
+            alert("Load Excel first.");
+            return;
+        }
+        var target = customerId.toString().replace(/\s+/g, "");
+        var rowIndex = -1;
+        for (var i=0; i<data.length; i++) {
+            if (data[i][0] && data[i][0].toString().replace(/\s+/g, "") === target) {
+                rowIndex = i;
+                break;
+            }
+        }
+        if (rowIndex === -1) {
+            alert("Customer ID not found in loaded Excel.");
+            return;
+        }
+        customerRow = rowIndex;
+        showCustomerDetails();
+        showRemarks();
+        document.getElementById("customerDetails").style.display = "flex";
+        document.getElementById("remarksSection").style.display = "block";
+        document.getElementById("customerDetails").scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+
+    function exportExcel() {
+        if (!workbook) {
+            alert("No workbook loaded.");
+            return;
+        }
+        try {
+            var out = [];
+            out.push(headers);
+            for (var i=0; i<data.length; i++) {
+                out.push(data[i]);
+            }
+            var ws = XLSX.utils.aoa_to_sheet(out);
+            var name = workbook.SheetNames[0];
+            workbook.Sheets[name] = ws;
+            XLSX.writeFile(workbook, "updated_masterfile.xlsx");
+            hasUnsavedChanges = false;
+            alert("Exported updated_masterfile.xlsx");
+        } catch (err) {
+            console.log(err);
+            alert("Error exporting. See console.");
+        }
+    }
+
+    // Scheduled Calls tab with Mark Done + Undo + Delete + Open
+    function openScheduledCalls() {
+        if (!scheduledNotifications.length) {
+            alert("No scheduled calls.");
+            return;
+        }
+        var win = window.open("", "_blank");
+        if (!win) {
+            alert("Popup blocked. Allow popups.");
+            return;
+        }
+
+        var html = ""
+            + "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Scheduled Calls</title>"
+            + "<style>"
+            + "body{font-family:Arial,sans-serif;background:#000;color:#fff;padding:20px;}"
+            + "table{width:100%;border-collapse:collapse;margin-top:10px;}"
+            + "th,td{border:1px solid #444;padding:8px;text-align:left;}"
+            + "th{background:#111;} tr.done{opacity:0.6;text-decoration:line-through;}"
+            + "button{padding:4px 8px;margin-right:4px;border-radius:4px;border:none;cursor:pointer;font-size:12px;}"
+            + "</style></head><body>"
+            + "<h2>Scheduled Calls</h2>"
+            + "<table><thead><tr>"
+            + "<th>#</th><th>Status</th><th>Customer ID</th><th>When</th><th>Remark</th><th>Actions</th>"
+            + "</tr></thead><tbody id='schedBody'></tbody></table>"
+            + "<script>"
+            + "function getList(){return (window.opener && window.opener.scheduledNotifications) || [];} "
+            + "function renderSched(){"
+            + " var list=getList(); var tb=document.getElementById('schedBody'); tb.innerHTML='';"
+            + " for(var i=0;i<list.length;i++){(function(index){"
+            + "   var n=list[index];"
+            + "   var tr=document.createElement('tr');"
+            + "   if(n.done) tr.className='done';"
+            + "   var tdIdx=document.createElement('td'); tdIdx.textContent=index+1; tr.appendChild(tdIdx);"
+            + "   var tdSt=document.createElement('td'); tdSt.textContent=n.status||''; tr.appendChild(tdSt);"
+            + "   var tdId=document.createElement('td'); tdId.textContent=n.id||''; tr.appendChild(tdId);"
+            + "   var tdWh=document.createElement('td');"
+            + "   if(!n.datetime){"
+            + "       tdWh.textContent='Not set';"
+            + "   } else {"
+            + "       try{ tdWh.textContent=new Date(n.datetime).toLocaleString(); }"
+            + "       catch(e){ tdWh.textContent=n.datetime||''; }"
+            + "   }"
+            + "   tr.appendChild(tdWh);"
+            + "   var tdRe=document.createElement('td'); tdRe.textContent=n.remark||''; tr.appendChild(tdRe);"
+            + "   var tdAc=document.createElement('td');"
+            + "   var bDone=document.createElement('button');"
+            + "   bDone.textContent='Mark Done';"
+            + "   bDone.onclick=function(ev){"
+            + "       ev.stopPropagation();"
+            + "       var l=getList();"
+            + "       if(!l[index]) return;"
+            + "       l[index].done=true;"
+            + "       renderSched();"
+            + "   };"
+            + "   tdAc.appendChild(bDone);"
+            + "   var bUndo=document.createElement('button');"
+            + "   bUndo.textContent='Undo';"
+            + "   bUndo.onclick=function(ev){"
+            + "       ev.stopPropagation();"
+            + "       var l3=getList();"
+            + "       if(!l3[index]) return;"
+            + "       l3[index].done=false;"
+            + "       renderSched();"
+            + "   };"
+            + "   tdAc.appendChild(bUndo);"
+            + "   var bDel=document.createElement('button');"
+            + "   bDel.textContent='Delete';"
+            + "   bDel.onclick=function(ev){"
+            + "       ev.stopPropagation();"
+            + "       var l2=getList();"
+            + "       if(!l2[index]) return;"
+            + "       l2.splice(index,1);"
+            + "       renderSched();"
+            + "   };"
+            + "   tdAc.appendChild(bDel);"
+            + "   var bOpen=document.createElement('button');"
+            + "   bOpen.textContent='Open in CRM';"
+            + "   bOpen.onclick=function(ev){"
+            + "       ev.stopPropagation();"
+            + "       if(window.opener && window.opener.focusOnCustomerId){"
+            + "           window.opener.focusOnCustomerId(n.id);"
+            + "           window.opener.focus();"
+            + "       }"
+            + "   };"
+            + "   tdAc.appendChild(bOpen);"
+            + "   tr.appendChild(tdAc);"
+            + "   tb.appendChild(tr);"
+            + " })(i);}"
+            + "}"
+            + "window.onload=renderSched;"
+            + "<\/script></body></html>";
+
+        win.document.open();
+        win.document.write(html);
+        win.document.close();
+    }
+</script>
+</body>
+</html>
