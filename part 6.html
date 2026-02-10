@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>CRM Debug Version</title>
+    
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #f0f0f0; }
+        .box { background: white; padding: 20px; border-radius: 8px; max-width: 800px; margin: 0 auto; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        button { padding: 10px 15px; cursor: pointer; margin: 5px; }
+        .error-box { background: #ffcccc; color: #cc0000; padding: 10px; border: 1px solid #cc0000; margin-bottom: 20px; display: none; }
+        textarea { width: 100%; height: 100px; margin-top: 10px; }
+    </style>
+
+    <script>
+        window.onerror = function(message, source, lineno, colno, error) {
+            var errorDiv = document.getElementById('errorDisplay');
+            if(errorDiv) {
+                errorDiv.style.display = 'block';
+                errorDiv.innerHTML += "<strong>Error:</strong> " + message + "<br>" +
+                                      "Line: " + lineno + "<br>" +
+                                      "Source: " + source + "<br><hr>";
+            }
+            alert("⚠️ An error occurred:\n" + message);
+        };
+    </script>
+
+    <script src="[https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js](https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js)"></script>
+</head>
+<body>
+
+<div class="box">
+    <h2>CRM - Diagnostic Mode</h2>
+    
+    <div id="errorDisplay" class="error-box"></div>
+
+    <p><strong>Step 1: Check Library</strong></p>
+    <div id="libStatus">Checking Excel Library...</div>
+
+    <p><strong>Step 2: Open File</strong></p>
+    <button onclick="openFilePicker()">📂 Open Excel File</button>
+    <button onclick="saveFile()" id="btnSave" disabled>💾 Save Changes</button>
+    <button onclick="downloadBackup()" id="btnDownload" disabled>⬇️ Download Backup</button>
+
+    <hr>
+    
+    <div id="workArea" style="display:none;">
+        <input type="text" id="searchId" placeholder="Enter Customer ID">
+        <button onclick="searchCustomer()">Search</button>
+        <div id="result" style="margin-top:10px; font-weight:bold;"></div>
+        
+        <h4>Add Remark:</h4>
+        <textarea id="remarkText" placeholder="Enter remark here..."></textarea>
+        <br>
+        <button onclick="addRemark()">Add Remark</button>
+    </div>
+</div>
+
+<script>
+    // 1. Check if XLSX library loaded
+    window.onload = function() {
+        var status = document.getElementById('libStatus');
+        if (typeof XLSX !== 'undefined') {
+            status.innerHTML = "<span style='color:green'>✅ Excel Library Loaded Successfully.</span>";
+        } else {
+            status.innerHTML = "<span style='color:red'>❌ Excel Library NOT Loaded. Check Internet Connection.</span>";
+            alert("CRITICAL ERROR: The Excel library failed to load.\nYou need an internet connection for this tool.");
+        }
+    };
+
+    var fileHandle;
+    var workbook;
+    var json_data = [];
+    var headers = [];
+    var currentRow = -1;
+
+    async function openFilePicker() {
+        try {
+            if ('showOpenFilePicker' in window) {
+                [fileHandle] = await window.showOpenFilePicker({
+                    types: [{ description: 'Excel', accept: {'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx']} }]
+                });
+                var file = await fileHandle.getFile();
+                var ab = await file.arrayBuffer();
+                readExcel(ab);
+            } else {
+                // Fallback for older browsers
+                var input = document.createElement('input');
+                input.type = 'file';
+                input.onchange = function(e){
+                    var f = e.target.files[0];
+                    var reader = new FileReader();
+                    reader.onload = function(e) { readExcel(e.target.result); };
+                    reader.readAsArrayBuffer(f);
+                }
+                input.click();
+            }
+        } catch(err) {
+            console.error(err); // Cancelled or error
+        }
+    }
+
+    function readExcel(buffer) {
+        try {
+            workbook = XLSX.read(new Uint8Array(buffer), {type:"array"});
+            var sheet = workbook.Sheets[workbook.SheetNames[0]];
+            var arr = XLSX.utils.sheet_to_json(sheet, {header:1});
+            
+            if(arr.length > 0) {
+                headers = arr[0];
+                json_data = arr.slice(1);
+                
+                // Ensure Headers has 'Remarks'
+                if(headers[headers.length-1] !== "Remarks") {
+                    headers.push("Remarks");
+                }
+
+                document.getElementById('workArea').style.display = 'block';
+                document.getElementById('btnSave').disabled = false;
+                document.getElementById('btnDownload').disabled = false;
+                alert("File Loaded! " + json_data.length + " rows found.");
+            }
+        } catch(e) {
+            alert("Error reading file: " + e.message);
+        }
+    }
+
+    function searchCustomer() {
+        var id = document.getElementById('searchId').value.trim();
+        currentRow = -1;
+        
+        for(var i=0; i<json_data.length; i++) {
+            // loose comparison for strings/numbers
+            if(json_data[i][0] == id) {
+                currentRow = i;
+                break;
+            }
+        }
+
+        if(currentRow > -1) {
+            document.getElementById('result').innerText = "Found Customer: Row " + (currentRow + 2);
+        } else {
+            document.getElementById('result').innerText = "Customer Not Found";
+        }
+    }
+
+    function addRemark() {
+        if(currentRow === -1) {
+            alert("Please search for a customer first.");
+            return;
+        }
+        var txt = document.getElementById('remarkText').value;
+        if(!txt) return;
+
+        // Ensure row has enough columns
+        while(json_data[currentRow].length < headers.length) {
+            json_data[currentRow].push("");
+        }
+
+        var remIndex = headers.length - 1;
+        var oldRem = json_data[currentRow][remIndex] || "";
+        
+        // Append new remark (simple text for debug mode)
+        var newRem = oldRem + " | " + new Date().toLocaleDateString() + ": " + txt;
+        json_data[currentRow][remIndex] = newRem;
+
+        document.getElementById('remarkText').value = "";
+        alert("Remark Added! Click 'Save Changes' to finish.");
+    }
+
+    async function saveFile() {
+        if(!workbook) return;
+        
+        try {
+            // Reconstruct sheet
+            var newSheetData = [headers].concat(json_data);
+            var newSheet = XLSX.utils.aoa_to_sheet(newSheetData);
+            workbook.Sheets[workbook.SheetNames[0]] = newSheet;
+            
+            var wbout = XLSX.write(workbook, {bookType:'xlsx', type:'array'});
+
+            if(fileHandle) {
+                const writable = await fileHandle.createWritable();
+                await writable.write(wbout);
+                await writable.close();
+                alert("✅ Saved directly to file!");
+            } else {
+                alert("Direct save not available (no file handle). Using download.");
+                downloadBackup();
+            }
+        } catch(e) {
+            alert("Save Failed: " + e.message + "\nTry the 'Download Backup' button.");
+        }
+    }
+
+    function downloadBackup() {
+        if(!workbook) return;
+        var newSheetData = [headers].concat(json_data);
+        var newSheet = XLSX.utils.aoa_to_sheet(newSheetData);
+        workbook.Sheets[workbook.SheetNames[0]] = newSheet;
+        XLSX.writeFile(workbook, "Debug_Backup.xlsx");
+    }
+</script>
+
+</body>
+</html>
